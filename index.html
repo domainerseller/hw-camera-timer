@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d0f14">
+<meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes">
+<title>Hot Wheels Camera Timer</title>
+<!-- Phone camera lap timer: draw a finish line on the live picture, teach each car its colour,
+     every crossing is a lap for THAT car (identified by colour, so cars can run tail to tail).
+     Needs HTTPS (or localhost) for the camera. No ESP32 needed. -->
+<style>
+:root{--bg:#0d0f14;--card:#181c25;--line:#262b38;--tx:#eef1f6;--mut:#8a93a6;--acc:#ff7a1a;--grn:#33d17a;--red:#ff4d5e;--blu:#4db8ff;color-scheme:dark}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--tx);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+body{padding:env(safe-area-inset-top) max(12px,env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
+.top{display:flex;align-items:center;justify-content:space-between;padding:10px 2px}
+.brand{font-weight:800;letter-spacing:.5px}.brand b{color:var(--acc)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;margin-bottom:12px}
+h3{margin:0 0 10px;font-size:13px;color:var(--mut);text-transform:uppercase;letter-spacing:1px;display:flex;justify-content:space-between;align-items:center}
+.cam{position:relative;width:100%;background:#000;border-radius:12px;overflow:hidden;touch-action:none}
+.cam video{display:block;width:100%}
+.cam canvas{position:absolute;inset:0;width:100%;height:100%}
+.chip{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.65);padding:5px 9px;border-radius:999px;font-size:13px;font-weight:700}
+.chip.hit{background:var(--acc)}
+.hint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;color:var(--mut);font-size:15px}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btn{flex:1;border:0;border-radius:12px;padding:13px 10px;font-size:16px;font-weight:800;color:#fff;background:var(--acc);min-width:90px}
+.btn.sec{background:#2a3040}.btn.red{background:var(--red)}.btn.sm{flex:0;padding:8px 12px;font-size:14px;min-width:0}
+.btn:active{transform:scale(.97)}.btn:disabled{opacity:.4}
+input,select{background:#0f1219;border:1px solid var(--line);color:var(--tx);border-radius:10px;padding:9px;font-size:16px;width:100%}
+input[type=range]{padding:0;accent-color:var(--acc)}
+.carrow{display:flex;align-items:center;gap:8px;margin:8px 0}
+.sw{width:34px;height:34px;border-radius:10px;border:2px solid var(--line);flex:0 0 34px}
+.carrow input{flex:1;min-width:0}
+.row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:10px 0}
+.step{display:flex;align-items:center;gap:6px}.step button{width:40px;height:40px;border-radius:10px;border:0;background:#2a3040;color:#fff;font-size:20px;font-weight:700}
+.step b{min-width:36px;text-align:center;font-size:20px}
+.seg{display:flex;background:#0f1219;border-radius:12px;padding:3px}.seg button{flex:1;border:0;background:none;color:var(--mut);padding:9px;border-radius:10px;font-size:14px;font-weight:700}
+.seg button.on{background:#2a3040;color:var(--tx)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.pc{background:#0f1219;border-radius:12px;padding:10px;border:2px solid transparent;text-align:center}
+.pc.lead{border-color:var(--grn)}
+.pn{font-weight:800;display:flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;overflow:hidden}
+.pn i{width:12px;height:12px;border-radius:4px;display:inline-block;flex:0 0 12px}
+.pl{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:1px;margin:3px 0}
+.pk{font-size:clamp(26px,9vw,40px);font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+.ps{font-size:13px;color:var(--mut);font-variant-numeric:tabular-nums}
+#status{text-align:center;font-size:17px;font-weight:700;color:var(--blu);margin:10px 0 2px;min-height:22px}
+#status.fin{color:var(--grn)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}td,th{padding:7px 5px;text-align:right;border-bottom:1px solid var(--line)}
+td:first-child,th:first-child{text-align:left}th{font-size:12px;color:var(--mut);font-weight:600}
+td.best{color:var(--grn);font-weight:700}
+.tw{overflow-x:auto}
+.note{font-size:13px;color:var(--mut);margin:6px 0}
+#flash{position:fixed;inset:0;pointer-events:none;opacity:0}
+#cd{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(13,15,20,.9);font-size:40vw;font-weight:900;color:var(--acc);z-index:5}
+#log{font-size:12px;color:var(--mut);max-height:90px;overflow:auto;font-family:ui-monospace,Consolas,monospace}
+</style></head><body>
+<div id="flash"></div><div id="cd"></div>
+<div class="top"><div class="brand">HOT WHEELS <b>CAMERA TIMER</b></div><span class="note" id="fps"></span></div>
+
+<div class="card">
+ <div class="cam" id="cam">
+  <video id="vid" playsinline muted></video>
+  <canvas id="ov"></canvas>
+  <div class="hint" id="hint">Tap “Start camera”. Put the phone above the finish line, looking down.</div>
+  <div class="chip" id="chip" hidden>gate clear</div>
+ </div>
+ <div class="btns" style="margin-top:10px">
+  <button class="btn sec" id="bCam">Start camera</button>
+  <button class="btn sec" id="bLine">Draw finish line</button>
+  <button class="btn sec" id="bEmpty">Learn empty track</button>
+ </div>
+ <p class="note" id="camNote">Draw the line straight across the lane: drag your finger over the picture.</p>
+</div>
+
+<div class="card">
+ <h3>Cars <button class="btn sec sm" id="bAdd">+ Add car</button></h3>
+ <div id="cars"></div>
+ <p class="note">To teach a car: learn the empty track first, then park the car ON the line and tap Teach. Use cars with clearly different colours.</p>
+</div>
+
+<div class="card">
+ <h3>Race</h3>
+ <div class="row"><div>Laps</div><div class="step"><button id="lm">−</button><b id="vLaps">9</b><button id="lp">+</button></div></div>
+ <div class="seg"><button id="m0">Flying start</button><button id="m1">3-2-1 GO</button></div>
+ <p class="note" id="modeNote"></p>
+ <div class="btns"><button class="btn" id="bStart">START</button><button class="btn sec" id="bReset">RESET</button></div>
+ <div id="status">Set up the camera and cars</div>
+ <div class="grid" id="panel" style="margin-top:10px"></div>
+</div>
+
+<div class="card"><h3>Laps</h3><div class="tw"><table><thead id="thd"></thead><tbody id="tbl"></tbody></table></div></div>
+
+<div class="card">
+ <h3>Records</h3>
+ <div class="tw"><table><thead><tr><th>Car</th><th>Laps</th><th>Avg</th><th>Best</th><th>Total</th></tr></thead><tbody id="rec"></tbody></table></div>
+ <div class="btns" style="margin-top:8px"><button class="btn sec sm" id="bClr">Clear records</button></div>
+</div>
+
+<div class="card">
+ <h3>Settings</h3>
+ <div class="row"><div>Sensitivity</div><b id="vSens">40</b></div>
+ <input type="range" id="rSens" min="10" max="120" step="2">
+ <p class="note">Lower = notices smaller changes. Raise it if shadows or flicker trigger the gate.</p>
+ <div class="row"><div>Ignore laps faster than</div><b id="vMin">0.8 s</b></div>
+ <input type="range" id="rMin" min="200" max="5000" step="100">
+ <div class="row"><div>Beeps</div><input type="checkbox" id="oBeep" style="width:auto;transform:scale(1.4)"></div>
+ <div class="row"><div>Say lap times</div><input type="checkbox" id="oVoice" style="width:auto;transform:scale(1.4)"></div>
+ <h3 style="margin-top:14px">Gate log</h3><div id="log"></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const ls={get(k,d){try{const v=localStorage.getItem('hwct_'+k);return v==null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem('hwct_'+k,JSON.stringify(v))}catch(e){}}};
+const f=(ms,d=3)=>ms==null||ms<0?'-':(ms/1000).toFixed(d);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const mn=a=>a.length?Math.min(...a):null;
+
+// ---------- settings ----------
+let S=Object.assign({laps:9,mode:0,sens:40,minLap:800,beep:true,voice:true,line:null},ls.get('set',{}));
+let cars=ls.get('cars',[{name:'Car 1',rgb:null},{name:'Car 2',rgb:null}]);
+const save=()=>{ls.set('set',S);ls.set('cars',cars)};
+
+// ---------- camera + gate ----------
+const vid=$('vid'),ov=$('ov'),og=ov.getContext('2d');
+const work=document.createElement('canvas'),wg=work.getContext('2d',{willReadFrequently:true});
+const W=320;                     // processing width
+let bg=null,lastMean=null,occ=false,gateFrac=0,drawing=false,dragA=null,frames=0,fpsT=0;
+const NS=64;                     // samples along the line
+
+async function startCam(){
+  try{
+    const st=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720},frameRate:{ideal:60}}});
+    vid.srcObject=st;await vid.play();$('hint').hidden=true;$('chip').hidden=false;$('bCam').textContent='Camera on';
+    work.width=W;work.height=Math.round(W*vid.videoHeight/vid.videoWidth);
+    if(!S.line)$('camNote').textContent='Now draw the finish line across the lane.';
+    loopFrame();
+  }catch(e){$('hint').textContent='Camera blocked: '+e.message+'. The page must be opened over https, and the camera allowed.'}
+}
+function samplePts(){           // NS points along the line, 3 parallel rows (thickness)
+  const L=S.line;if(!L)return[];
+  const ax=L[0]*work.width,ay=L[1]*work.height,bx=L[2]*work.width,by=L[3]*work.height;
+  const len=Math.hypot(bx-ax,by-ay)||1,nx=-(by-ay)/len,ny=(bx-ax)/len,p=[];
+  for(let i=0;i<NS;i++){const t=(i+.5)/NS;for(const o of[-2,0,2])p.push([Math.round(ax+(bx-ax)*t+nx*o),Math.round(ay+(by-ay)*t+ny*o)])}
+  return p}
+let pts=[];
+function readGate(){
+  wg.drawImage(vid,0,0,work.width,work.height);
+  const d=wg.getImageData(0,0,work.width,work.height).data,w=work.width,h=work.height,out=new Float32Array(pts.length*3);
+  pts.forEach(([x,y],i)=>{x=Math.max(0,Math.min(w-1,x));y=Math.max(0,Math.min(h-1,y));const k=(y*w+x)*4;out[i*3]=d[k];out[i*3+1]=d[k+1];out[i*3+2]=d[k+2]});
+  return out}
+function learnEmpty(){if(!pts.length)return toast('Draw the finish line first');bg=readGate();log('empty track learned');toast('Empty track learned')}
+// colour feature: chroma (brightness-free) + a little brightness
+function feat(r,g,b){const s=r+g+b+1;return[r/s*3,g/s*3,b/s*3,(r+g+b)/765]}
+function dist(a,b){const fa=feat(...a),fb=feat(...b);return Math.hypot(fa[0]-fb[0],fa[1]-fb[1],fa[2]-fb[2],(fa[3]-fb[3])*.6)}
+function classify(rgb){let best=-1,bd=1e9;cars.forEach((c,i)=>{if(c.rgb){const d=dist(rgb,c.rgb);if(d<bd){bd=d;best=i}}});
+  return best<0?0:best}
+const taught=()=>cars.filter(c=>c.rgb).length;
+
+let cur=null;                    // the car(s) currently in the gate
+function onFrame(t){
+  const px=readGate();
+  if(!bg){bg=px;return}
+  let n=0,sr=0,sg=0,sb=0;const changed=new Uint8Array(pts.length);
+  for(let i=0;i<pts.length;i++){const k=i*3,dd=Math.abs(px[k]-bg[k])+Math.abs(px[k+1]-bg[k+1])+Math.abs(px[k+2]-bg[k+2]);
+    if(dd>S.sens*1.5){changed[i]=1;n++;sr+=px[k];sg+=px[k+1];sb+=px[k+2]}}
+  gateFrac=n/pts.length;
+  const hit=n>=Math.max(4,pts.length*.08);
+  lastMean=n?[sr/n,sg/n,sb/n]:null;
+  if(!hit){                      // slowly follow lighting changes on the empty track
+    for(let i=0;i<px.length;i++)bg[i]+= (px[i]-bg[i])*.03;
+    if(cur){emit(cur.id,cur.t0);cur=null}
+  }else{
+    const id=taught()>1?classify(lastMean):0;
+    if(!cur)cur={t0:t,id,alt:-1,altN:0,altT:0};
+    else if(id!==cur.id){        // a different colour took over: tail-to-tail cars, split them
+      if(cur.alt===id)cur.altN++;else{cur.alt=id;cur.altN=1;cur.altT=t}
+      if(cur.altN>=2){emit(cur.id,cur.t0);cur={t0:cur.altT,id,alt:-1,altN:0,altT:0}}
+    }else{cur.alt=-1;cur.altN=0}
+  }
+  occ=hit;
+}
+function loopFrame(){
+  const go=(now,meta)=>{const t=meta&&meta.captureTime?meta.captureTime:now;
+    if(S.line&&!drawing){if(!pts.length)pts=samplePts();onFrame(t)}
+    frames++;if(now-fpsT>1000){$('fps').textContent=frames+' fps';frames=0;fpsT=now}
+    drawOverlay();
+    if(vid.requestVideoFrameCallback)vid.requestVideoFrameCallback(go);else requestAnimationFrame(n=>go(n))};
+  if(vid.requestVideoFrameCallback)vid.requestVideoFrameCallback(go);else requestAnimationFrame(n=>go(n))}
+function drawOverlay(){
+  const r=ov.getBoundingClientRect();if(ov.width!==r.width*devicePixelRatio){ov.width=r.width*devicePixelRatio;ov.height=r.height*devicePixelRatio}
+  og.clearRect(0,0,ov.width,ov.height);
+  const L=drawing&&dragA?dragA:S.line;
+  if(L){og.lineWidth=6*devicePixelRatio;og.strokeStyle=occ?'#ff7a1a':'#33d17a';og.setLineDash(drawing?[12,8]:[]);
+    og.beginPath();og.moveTo(L[0]*ov.width,L[1]*ov.height);og.lineTo(L[2]*ov.width,L[3]*ov.height);og.stroke()}
+  const c=$('chip');
+  if(!S.line)c.textContent='draw the finish line';
+  else if(!bg)c.textContent='learn empty track';
+  else if(occ){const id=taught()>1&&lastMean?classify(lastMean):0;c.innerHTML='&#9632; '+esc(cars[id]?cars[id].name:'car')+' '+Math.round(gateFrac*100)+'%';c.style.color=lastMean?`rgb(${lastMean.map(Math.round)})`:''}
+  else{c.textContent='gate clear';c.style.color=''}
+  c.classList.toggle('hit',occ);
+}
+// draw the line by dragging
+const cam=$('cam');
+function rel(e){const r=vid.getBoundingClientRect();return[(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height]}
+cam.addEventListener('pointerdown',e=>{if(!drawing)return;const p=rel(e);dragA=[p[0],p[1],p[0],p[1]];cam.setPointerCapture(e.pointerId)});
+cam.addEventListener('pointermove',e=>{if(drawing&&dragA){const p=rel(e);dragA[2]=p[0];dragA[3]=p[1]}});
+cam.addEventListener('pointerup',()=>{if(!drawing||!dragA)return;
+  if(Math.hypot(dragA[2]-dragA[0],dragA[3]-dragA[1])<.05){dragA=null;return toast('Drag a longer line across the lane')}
+  S.line=dragA;dragA=null;drawing=false;save();pts=samplePts();bg=null;$('bLine').textContent='Redraw line';
+  $('camNote').textContent='Line set. Keep the track empty: the gate learns it automatically.';setTimeout(learnEmpty,600)});
+$('bLine').onclick=()=>{if(!vid.srcObject)return toast('Start the camera first');drawing=true;dragA=null;$('camNote').textContent='Drag across the lane on the picture.'};
+$('bCam').onclick=()=>{unlock();if(!vid.srcObject)startCam()};
+$('bEmpty').onclick=learnEmpty;
+
+// ---------- cars ----------
+const PALETTE=['#ff4d5e','#4db8ff','#ffd23f','#33d17a'];
+function renderCars(){
+  $('cars').innerHTML=cars.map((c,i)=>`<div class="carrow"><div class="sw" style="background:${c.rgb?`rgb(${c.rgb.map(Math.round)})`:'transparent'}"></div>
+   <input id="cn${i}" value="${esc(c.name)}" maxlength="20"><button class="btn sec sm" data-t="${i}">Teach</button>${cars.length>1?`<button class="btn sec sm" data-x="${i}">✕</button>`:''}</div>`).join('');
+  cars.forEach((c,i)=>{$('cn'+i).onchange=e=>{c.name=e.target.value.trim()||('Car '+(i+1));save();render()}});
+  $('cars').querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{const i=+b.dataset.t;
+    if(!bg)return toast('Learn the empty track first');
+    if(!occ||!lastMean)return toast('Park the car on the line, then tap Teach');
+    cars[i].rgb=lastMean.slice();save();renderCars();log('taught '+cars[i].name+' rgb('+lastMean.map(Math.round)+')');toast(cars[i].name+' learned')});
+  $('cars').querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>{cars.splice(+b.dataset.x,1);save();renderCars();newRace()});
+}
+$('bAdd').onclick=()=>{if(cars.length>=4)return toast('4 cars max');cars.push({name:'Car '+(cars.length+1),rgb:null});save();renderCars();newRace()};
+
+// ---------- race ----------
+let R;                           // race state
+function newRace(){R={state:0,goAt:0,cars:cars.map(()=>({on:false,done:false,laps:0,t:[],start:0,lapStart:0,last:0,total:0})),leader:-1,winner:-1};render()}
+function startRace(){newRace();if(S.mode==1){R.state=1;R.goAt=performance.now()+3000}}
+function racers(){return taught()>1?cars.map((c,i)=>i):[0]}
+function emit(id,t){
+  log(f(t%100000,2)+'  '+(cars[id]?cars[id].name:'?'));
+  flashC('#4db8ff',.15);
+  if(R.state==0&&S.mode==0)R.state=2;
+  if(R.state!=2)return;
+  const c=R.cars[id];if(!c)return;
+  if(c.last&&t-c.last<S.minLap)return;
+  c.last=t;
+  if(!c.on){c.on=true;c.start=c.lapStart=t;if(id==0||!R.cars.some((x,j)=>j!=id&&x.on))say('Go!');return}
+  if(c.done)return;
+  const lap=t-c.lapStart;c.t.push(lap);c.laps++;c.lapStart=t;
+  const pb=mn(c.t.slice(0,-1)),msg=[];
+  beep(pb==null||lap<pb?1320:880,90);
+  msg.push((racers().length>1?cars[id].name+' ':'Lap '+c.laps+', ')+(lap/1000).toFixed(2)+(pb!=null&&lap<pb?', best':''));
+  if(c.laps>=S.laps){c.done=true;c.total=t-c.start;msg.push(cars[id].name+' finished');addRec(id);beep(1568,140,2)}
+  const ld=leaderNow();
+  if(racers().length>1&&ld>=0&&R.leader>=0&&ld!=R.leader&&!c.done){msg.unshift(cars[ld].name+' takes the lead');flashC('#33d17a',.35);beep(1760,70,3)}
+  if(ld>=0)R.leader=ld;
+  const live=racers().map(i=>R.cars[i]);
+  if(live.every(x=>x.done)){R.state=3;const w=winnerNow();R.winner=w;
+    if(live.length>1){const sec=live.filter((x,i)=>racers()[i]!=w).map(x=>x.total);msg.push(cars[w].name+' wins by '+((Math.min(...sec)-R.cars[w].total)/1000).toFixed(2)+' seconds')}
+    else msg.push('Total '+(c.total/1000).toFixed(2));flashC('#ff7a1a',.35)}
+  say(msg.join('. '));render();
+}
+// who is ahead: compare time taken over the same number of laps
+function leaderNow(){const rs=racers().filter(i=>R.cars[i].on);if(rs.length<2)return rs[0]??-1;
+  const n=Math.min(...rs.map(i=>R.cars[i].laps));if(!n)return R.leader;
+  let best=-1,bt=1e12;rs.forEach(i=>{const s=R.cars[i].t.slice(0,n).reduce((a,b)=>a+b,0);if(s<bt){bt=s;best=i}});return best}
+function winnerNow(){let w=-1,bt=1e12;racers().forEach(i=>{const c=R.cars[i];if(c.done&&c.total<bt){bt=c.total;w=i}});return w}
+
+function render(){
+  $('vLaps').textContent=S.laps;$('m0').classList.toggle('on',S.mode==0);$('m1').classList.toggle('on',S.mode==1);
+  $('modeNote').textContent=S.mode==0?'Each car’s clock starts the first time it crosses the line.':'START counts 3-2-1-GO; launch on GO. Every crossing is a lap.';
+  const rs=racers(),st=$('status');st.className='';
+  if(!vid.srcObject)st.textContent='Start the camera';
+  else if(!S.line)st.textContent='Draw the finish line';
+  else if(R.state==0)st.textContent=S.mode==1?'Press START':'Ready: send the car'+(rs.length>1?'s':'');
+  else if(R.state==1)st.textContent='Get ready…';
+  else if(R.state==2)st.textContent=rs.length>1&&R.leader>=0?cars[R.leader].name+' leads':'Racing';
+  else{st.textContent=(R.winner>=0?cars[R.winner].name:'')+(rs.length>1?' WINS':' finished');st.className='fin'}
+  $('bStart').textContent=R.state==3?'NEW RACE':R.state==0?'START':'RESTART';
+  $('panel').innerHTML=rs.map(i=>{const c=R.cars[i],col=cars[i].rgb?`rgb(${cars[i].rgb.map(Math.round)})`:PALETTE[i];
+    return `<div class="pc ${rs.length>1&&R.leader==i&&R.state==2?'lead':''}"><div class="pn"><i style="background:${col}"></i>${esc(cars[i].name)}</div>
+    <div class="pl">${c.done?'finished':c.on?'lap '+(c.laps+1)+' / '+S.laps:'waiting'}</div><div class="pk" id="clk${i}">0.000</div>
+    <div class="ps">last ${f(c.t[c.t.length-1])} · best ${f(mn(c.t))}</div></div>`}).join('');
+  $('thd').innerHTML='<tr><th>#</th>'+rs.map(i=>'<th>'+esc(cars[i].name)+'</th>').join('')+'</tr>';
+  const n=Math.max(0,...rs.map(i=>R.cars[i].t.length));let h='';
+  for(let k=n-1;k>=0;k--){const v=rs.map(i=>R.cars[i].t[k]),b=Math.min(...v.filter(x=>x!=null));
+    h+='<tr><td>'+(k+1)+'</td>'+v.map(x=>'<td class="'+(x!=null&&x==b&&rs.length>1?'best':'')+'">'+f(x)+'</td>').join('')+'</tr>'}
+  if(R.state==3&&rs.length)h='<tr><td>Total</td>'+rs.map(i=>'<td class="'+(i==R.winner&&rs.length>1?'best':'')+'">'+f(R.cars[i].total)+'</td>').join('')+'</tr>'+h;
+  $('tbl').innerHTML=h;
+}
+function tick(){const now=performance.now();
+  if(R.state==1){const left=Math.ceil((R.goAt-now)/1000),c=$('cd');
+    if(left>0){c.style.display='flex';if(c.textContent!=left){c.textContent=left;beep(660,200)}}
+    else{c.style.display='none';c.textContent='';beep(1320,500);R.state=2;racers().forEach(i=>{const x=R.cars[i];x.on=true;x.start=x.lapStart=R.goAt});render()}}
+  racers().forEach(i=>{const c=R.cars[i],e=$('clk'+i);if(!e)return;const x=c.done?c.total:(R.state==2&&c.on?now-c.lapStart:0);e.textContent=f(x,x>=10000?2:3)});
+  requestAnimationFrame(tick)}
+
+// ---------- records ----------
+let recs=ls.get('recs',[]);
+function addRec(i){const c=R.cars[i];recs.push({n:cars[i].name,l:c.laps,t:c.total,b:mn(c.t)});recs.sort((a,b)=>a.t/a.l-b.t/b.l);recs=recs.slice(0,10);ls.set('recs',recs);renderRec()}
+function renderRec(){const m=['🥇','🥈','🥉'];$('rec').innerHTML=recs.length?recs.map((r,i)=>`<tr><td>${m[i]||i+1+'.'} ${esc(r.n)}</td><td>${r.l}</td><td>${f(r.t/r.l)}</td><td>${f(r.b)}</td><td>${f(r.t,2)}</td></tr>`).join(''):'<tr><td colspan="5" class="note">No races yet.</td></tr>'}
+$('bClr').onclick=()=>{if($('bClr').dataset.sure){recs=[];ls.set('recs',recs);renderRec();$('bClr').textContent='Clear records';delete $('bClr').dataset.sure}
+  else{$('bClr').dataset.sure=1;$('bClr').textContent='Tap again to delete'}};
+
+// ---------- sound, voice, misc ----------
+let ac=null,wake=null;
+function unlock(){if(!ac){try{ac=new(window.AudioContext||window.webkitAudioContext)()}catch(e){}}if(ac&&ac.state=='suspended')ac.resume();
+  try{if('wakeLock'in navigator&&!wake)navigator.wakeLock.request('screen').then(w=>{wake=w;w.onrelease=()=>wake=null}).catch(()=>{})}catch(e){}}
+document.addEventListener('pointerdown',unlock);
+function beep(fr,ms,n=1){if(!S.beep||!ac)return;for(let i=0;i<n;i++){const o=ac.createOscillator(),g=ac.createGain(),t=ac.currentTime+i*(ms+70)/1000;
+  o.frequency.value=fr;o.type='square';g.gain.setValueAtTime(.15,t);g.gain.exponentialRampToValueAtTime(.001,t+ms/1000);o.connect(g).connect(ac.destination);o.start(t);o.stop(t+ms/1000)}}
+function say(t){if(!S.voice||!window.speechSynthesis)return;speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.rate=1.15;speechSynthesis.speak(u)}
+function flashC(c,o){const e=$('flash');e.style.background=c;e.style.transition='none';e.style.opacity=o;requestAnimationFrame(()=>{e.style.transition='opacity .5s';e.style.opacity=0})}
+let toastT;function toast(m){$('camNote').textContent=m;clearTimeout(toastT)}
+function log(m){const l=$('log');l.textContent=m+'\n'+l.textContent.slice(0,2000)}
+
+$('lm').onclick=()=>{S.laps=Math.max(1,S.laps-1);save();render()};$('lp').onclick=()=>{S.laps=Math.min(99,S.laps+1);save();render()};
+$('m0').onclick=()=>{S.mode=0;save();newRace()};$('m1').onclick=()=>{S.mode=1;save();newRace()};
+$('bStart').onclick=()=>{unlock();startRace()};$('bReset').onclick=newRace;
+$('rSens').value=S.sens;$('vSens').textContent=S.sens;$('rSens').oninput=e=>{S.sens=+e.target.value;$('vSens').textContent=S.sens;save()};
+$('rMin').value=S.minLap;$('vMin').textContent=f(S.minLap,1)+' s';$('rMin').oninput=e=>{S.minLap=+e.target.value;$('vMin').textContent=f(S.minLap,1)+' s';save()};
+$('oBeep').checked=S.beep;$('oBeep').onchange=e=>{S.beep=e.target.checked;save()};
+$('oVoice').checked=S.voice;$('oVoice').onchange=e=>{S.voice=e.target.checked;save()};
+if(S.line)$('bLine').textContent='Redraw line';
+renderCars();renderRec();newRace();tick();
+</script>
+</body></html>
