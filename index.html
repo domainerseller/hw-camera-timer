@@ -158,29 +158,39 @@ function classify(rgb){let best=-1,bd=1e9;cars.forEach((c,i)=>{if(c.rgb){const d
   return best<0?0:best}
 const taught=()=>cars.filter(c=>c.rgb).length;
 
-let cur=null;                    // the car(s) currently in the gate
+let cur=null,frameShare=[];      // the car(s) currently in the gate; this frame's colour votes
+const argmax=a=>a.reduce((b,x,i)=>x>a[b]?i:b,0);
 function onFrame(t){
   const px=readGate();
   if(!bg){bg=px;return}
-  let n=0,sr=0,sg=0,sb=0;const changed=new Uint8Array(pts.length);
+  const ch=[];
   for(let i=0;i<pts.length;i++){const k=i*3,dd=Math.abs(px[k]-bg[k])+Math.abs(px[k+1]-bg[k+1])+Math.abs(px[k+2]-bg[k+2]);
-    if(dd>S.sens*1.5){changed[i]=1;n++;sr+=px[k];sg+=px[k+1];sb+=px[k+2]}}
+    if(dd>S.sens*1.5)ch.push([px[k],px[k+1],px[k+2]])}
+  const n=ch.length;
   gateFrac=n/pts.length;
   const hit=n>=Math.max(4,pts.length*.08);
-  lastMean=n?[sr/n,sg/n,sb/n]:null;
+  lastMean=n?median(ch):null;
+  // every changed pixel votes for its nearest car colour (a green car with black windows still votes mostly green)
+  frameShare=cars.map(()=>0);
+  if(n&&taught()>1){ch.forEach(p=>frameShare[classify(p)]++);frameShare=frameShare.map(v=>v/n)}else if(n)frameShare[0]=1;
   if(!hit){                      // slowly follow lighting changes on the empty track
     for(let i=0;i<px.length;i++)bg[i]+= (px[i]-bg[i])*.03;
-    if(cur){emit(cur.id,cur.t0);cur=null}
+    if(cur){emit(argmax(cur.votes),cur.t0);cur=null}
   }else{
-    const id=taught()>1?classify(lastMean):0;
-    if(!cur)cur={t0:t,id,alt:-1,altN:0,altT:0};
-    else if(id!==cur.id){        // a different colour took over: tail-to-tail cars, split them
-      if(cur.alt===id)cur.altN++;else{cur.alt=id;cur.altN=1;cur.altT=t}
-      if(cur.altN>=2){emit(cur.id,cur.t0);cur={t0:cur.altT,id,alt:-1,altN:0,altT:0}}
-    }else{cur.alt=-1;cur.altN=0}
+    if(!cur)cur={t0:t,votes:frameShare.slice(),altN:0,altT:0,alt:-1};
+    else{
+      const a=argmax(cur.votes),b=argmax(frameShare);
+      // split only when the first car's colour has GONE from the line and another colour fills it
+      if(b!==a&&frameShare[a]<.08&&frameShare[b]>.6){
+        if(cur.alt===b)cur.altN++;else{cur.alt=b;cur.altN=1;cur.altT=t}
+        if(cur.altN>=2){emit(a,cur.t0);cur={t0:cur.altT,votes:frameShare.slice(),altN:0,altT:0,alt:-1};occ=hit;return}
+      }else{cur.alt=-1;cur.altN=0}
+      frameShare.forEach((v,i)=>cur.votes[i]+=v);
+    }
   }
   occ=hit;
 }
+function median(ps){return[0,1,2].map(c=>{const v=ps.map(p=>p[c]).sort((x,y)=>x-y);return v[v.length>>1]})}
 function loopFrame(){
   const go=(now,meta)=>{const t=meta&&meta.captureTime?meta.captureTime:now;
     if(S.line&&!drawing){if(!pts.length)pts=samplePts();onFrame(t)}
@@ -197,7 +207,7 @@ function drawOverlay(){
   const c=$('chip');
   if(!S.line)c.textContent='draw the finish line';
   else if(!bg)c.textContent='learn empty track';
-  else if(occ){const id=taught()>1&&lastMean?classify(lastMean):0;c.innerHTML='&#9632; '+esc(cars[id]?cars[id].name:'car')+' '+Math.round(gateFrac*100)+'%';c.style.color=lastMean?`rgb(${lastMean.map(Math.round)})`:''}
+  else if(occ){const id=frameShare.length?argmax(frameShare):0;c.innerHTML='&#9632; '+esc(cars[id]?cars[id].name:'car')+' '+Math.round(gateFrac*100)+'%';c.style.color=lastMean?`rgb(${lastMean.map(Math.round)})`:''}
   else{c.textContent='gate clear';c.style.color=''}
   c.classList.toggle('hit',occ);
 }
